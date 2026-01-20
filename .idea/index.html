@@ -1,0 +1,383 @@
+<!-- Thêm vào phần <head> của index.html hiện tại -->
+<script>
+    // ==================== CẤU HÌNH API ====================
+    const API_BASE_URL = 'http://localhost:5000/api';
+    let currentUser = null;
+    let authToken = null;
+
+    // ==================== HỆ THỐNG ĐĂNG KÝ/ĐĂNG NHẬP ====================
+
+    // Hiển thị form đăng ký
+    function showRegisterForm() {
+        document.getElementById('authContainer').innerHTML = `
+            <div class="auth-form">
+                <h3><i class="fas fa-user-plus"></i> Tạo tài khoản mới</h3>
+                <div class="form-group">
+                    <label>Email (@gmail.com):</label>
+                    <input type="email" id="regEmail" placeholder="username@gmail.com" class="form-control">
+                    <small class="text-muted">Chỉ hỗ trợ email @gmail.com</small>
+                </div>
+                <div class="form-group">
+                    <label>Mật khẩu:</label>
+                    <input type="password" id="regPassword" placeholder="Ít nhất 6 ký tự" class="form-control">
+                </div>
+                <button class="btn btn-primary btn-block" onclick="sendOTP()">
+                    <i class="fas fa-paper-plane"></i> Gửi mã OTP
+                </button>
+
+                <div id="otpSection" style="display: none; margin-top: 20px;">
+                    <div class="form-group">
+                        <label>Mã OTP (6 số):</label>
+                        <input type="text" id="otpCode" placeholder="Nhập mã từ email" class="form-control" maxlength="6">
+                        <small class="text-muted">Mã có hiệu lực trong 2 phút</small>
+                    </div>
+                    <button class="btn btn-success btn-block" onclick="completeRegistration()">
+                        <i class="fas fa-check-circle"></i> Xác thực & Đăng ký
+                    </button>
+                </div>
+
+                <div class="text-center mt-3">
+                    <a href="#" onclick="showLoginForm()">Đã có tài khoản? Đăng nhập</a>
+                </div>
+            </div>
+        `;
+    }
+
+    // Gửi OTP đến email
+    async function sendOTP() {
+        const email = document.getElementById('regEmail').value;
+        const password = document.getElementById('regPassword').value;
+
+        if (!email.endsWith('@gmail.com')) {
+            alert('Vui lòng sử dụng email @gmail.com');
+            return;
+        }
+
+        if (password.length < 6) {
+            alert('Mật khẩu phải có ít nhất 6 ký tự');
+            return;
+        }
+
+        try {
+            const response = await fetch(`${API_BASE_URL}/auth/send-otp`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ email })
+            });
+
+            const data = await response.json();
+
+            if (data.success) {
+                document.getElementById('otpSection').style.display = 'block';
+                alert('✅ Mã OTP đã được gửi đến email của bạn!');
+                localStorage.setItem('pendingEmail', email);
+                localStorage.setItem('pendingPassword', password);
+
+                // Đếm ngược 2 phút
+                startOTPTimer(120);
+            } else {
+                alert('❌ ' + data.error);
+            }
+        } catch (error) {
+            console.error('Lỗi gửi OTP:', error);
+            alert('❌ Không thể gửi OTP. Vui lòng thử lại.');
+        }
+    }
+
+    // Hoàn tất đăng ký với OTP
+    async function completeRegistration() {
+        const email = localStorage.getItem('pendingEmail');
+        const password = localStorage.getItem('pendingPassword');
+        const otp = document.getElementById('otpCode').value;
+
+        if (!email || !password || !otp) {
+            alert('Vui lòng điền đầy đủ thông tin');
+            return;
+        }
+
+        try {
+            const response = await fetch(`${API_BASE_URL}/auth/register`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ email, password, otp })
+            });
+
+            const data = await response.json();
+
+            if (data.success) {
+                // Lưu token và thông tin người dùng
+                authToken = data.token;
+                currentUser = data.user;
+                localStorage.setItem('authToken', authToken);
+                localStorage.setItem('currentUser', JSON.stringify(currentUser));
+
+                // Xóa thông tin tạm
+                localStorage.removeItem('pendingEmail');
+                localStorage.removeItem('pendingPassword');
+
+                alert('🎉 Đăng ký thành công!');
+                updateUIForLoggedInUser();
+                loadUserQuizzes();
+            } else {
+                alert('❌ ' + data.error);
+            }
+        } catch (error) {
+            console.error('Lỗi đăng ký:', error);
+            alert('❌ Không thể đăng ký. Vui lòng thử lại.');
+        }
+    }
+
+    // ==================== XỬ LÝ ẢNH VỚI AI BACKEND ====================
+
+    async function processImageWithAIBackend(imageFiles) {
+        showLoading('AI đang phân tích ảnh...');
+
+        const formData = new FormData();
+
+        // Thêm tối đa 10 ảnh
+        const filesToUpload = Array.from(imageFiles).slice(0, 10);
+        filesToUpload.forEach((file, index) => {
+            if (index === 0) {
+                formData.append('image', file); // Ảnh chính
+            } else {
+                formData.append('images', file); // Các ảnh bổ sung
+            }
+        });
+
+        try {
+            const response = await fetch(`${API_BASE_URL}/ai/process-image`, {
+                method: 'POST',
+                body: formData
+                // Note: Không cần Content-Type header với FormData
+            });
+
+            const data = await response.json();
+            hideLoading();
+
+            if (data.success) {
+                // Xử lý kết quả từ AI
+                const questions = [];
+
+                data.results.forEach((result, index) => {
+                    if (result.question && result.options.length > 0) {
+                        questions.push({
+                            id: Date.now() + index,
+                            question: result.question,
+                            options: result.options,
+                            correctAnswer: result.correctAnswer,
+                            sourceImage: result.fileName,
+                            explanation: `Tự động tạo từ ảnh: ${result.fileName}`
+                        });
+                    }
+                });
+
+                if (questions.length > 0) {
+                    // Tạo quiz từ kết quả AI
+                    createQuizFromAIResults(questions);
+                    alert(`✅ Đã tạo ${questions.length} câu hỏi từ ${data.results.length} ảnh`);
+                } else {
+                    alert('⚠️ Không thể tạo câu hỏi từ ảnh. Vui lòng thử ảnh khác.');
+                }
+            } else {
+                alert('❌ ' + data.error);
+            }
+        } catch (error) {
+            hideLoading();
+            console.error('Lỗi xử lý ảnh AI:', error);
+            alert('❌ Không thể kết nối đến AI Service. Vui lòng thử lại sau.');
+        }
+    }
+
+    // ==================== LƯU QUIZ CÁ NHÂN ====================
+
+    async function saveUserQuiz(quizData) {
+        if (!authToken || !currentUser) {
+            alert('Vui lòng đăng nhập để lưu quiz!');
+            showRegisterForm();
+            return;
+        }
+
+        try {
+            const response = await fetch(`${API_BASE_URL}/user/save-quiz`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${authToken}`
+                },
+                body: JSON.stringify({
+                    title: quizData.title || `Quiz ${new Date().toLocaleDateString()}`,
+                    questions: quizData.questions,
+                    tags: ['ai-generated', 'from-image']
+                })
+            });
+
+            const data = await response.json();
+
+            if (data.success) {
+                alert('✅ Đã lưu quiz vào tài khoản của bạn!');
+                return data.quizId;
+            } else {
+                alert('❌ ' + data.error);
+                return null;
+            }
+        } catch (error) {
+            console.error('Lỗi lưu quiz:', error);
+            alert('❌ Không thể lưu quiz. Vui lòng thử lại.');
+            return null;
+        }
+    }
+
+    // ==================== TẢI QUIZ CÁ NHÂN ====================
+
+    async function loadUserQuizzes() {
+        if (!authToken) return;
+
+        try {
+            const response = await fetch(`${API_BASE_URL}/user/quizzes`, {
+                method: 'GET',
+                headers: {
+                    'Authorization': `Bearer ${authToken}`
+                }
+            });
+
+            const data = await response.json();
+
+            if (data.success) {
+                displayUserQuizzes(data.quizzes, data.stats);
+            }
+        } catch (error) {
+            console.error('Lỗi tải quizzes:', error);
+        }
+    }
+
+    // ==================== KHỞI ĐỘNG ỨNG DỤNG ====================
+
+    document.addEventListener('DOMContentLoaded', function() {
+        // Kiểm tra token đã lưu
+        const savedToken = localStorage.getItem('authToken');
+        const savedUser = localStorage.getItem('currentUser');
+
+        if (savedToken && savedUser) {
+            authToken = savedToken;
+            currentUser = JSON.parse(savedUser);
+            updateUIForLoggedInUser();
+            loadUserQuizzes();
+        }
+
+        // Cập nhật nút upload ảnh để dùng AI backend
+        const imageUploadBtn = document.getElementById('imageUploadBtn');
+        if (imageUploadBtn) {
+            imageUploadBtn.onclick = function() {
+                const fileInput = document.getElementById('imageUploadInput');
+                if (fileInput.files.length > 0) {
+                    processImageWithAIBackend(fileInput.files);
+                }
+            };
+        }
+    });
+
+    // Cập nhật UI khi đã đăng nhập
+    function updateUIForLoggedInUser() {
+        if (currentUser) {
+            document.getElementById('userInfo').innerHTML = `
+                <div class="user-profile">
+                    <i class="fas fa-user-circle"></i>
+                    <span>${currentUser.email}</span>
+                    <button class="btn btn-sm btn-outline-secondary" onclick="logout()">
+                        <i class="fas fa-sign-out-alt"></i> Đăng xuất
+                    </button>
+                </div>
+            `;
+        }
+    }
+
+    // Đăng xuất
+    function logout() {
+        authToken = null;
+        currentUser = null;
+        localStorage.removeItem('authToken');
+        localStorage.removeItem('currentUser');
+        location.reload();
+    }
+
+    // Đếm ngược OTP
+    function startOTPTimer(seconds) {
+        const timerElement = document.createElement('div');
+        timerElement.id = 'otpTimer';
+        timerElement.className = 'otp-timer';
+        document.getElementById('otpSection').appendChild(timerElement);
+
+        let timeLeft = seconds;
+
+        const timer = setInterval(() => {
+            const minutes = Math.floor(timeLeft / 60);
+            const seconds = timeLeft % 60;
+
+            timerElement.innerHTML = `⏳ Mã OTP còn hiệu lực: ${minutes}:${seconds.toString().padStart(2, '0')}`;
+
+            if (timeLeft <= 0) {
+                clearInterval(timer);
+                timerElement.innerHTML = '⏰ Mã OTP đã hết hạn';
+                timerElement.style.color = 'var(--danger)';
+            }
+
+            timeLeft--;
+        }, 1000);
+    }
+</script>
+
+<!-- Thêm CSS cho phần đăng ký -->
+<style>
+    .auth-form {
+        background: white;
+        padding: 2rem;
+        border-radius: 15px;
+        box-shadow: 0 5px 20px rgba(0,0,0,0.1);
+        max-width: 400px;
+        margin: 2rem auto;
+    }
+
+    .form-group {
+        margin-bottom: 1.5rem;
+    }
+
+    .form-control {
+        width: 100%;
+        padding: 0.8rem;
+        border: 2px solid #e0e0e0;
+        border-radius: 10px;
+        font-size: 1rem;
+        transition: border-color 0.3s;
+    }
+
+    .form-control:focus {
+        border-color: var(--primary);
+        outline: none;
+    }
+
+    .btn-block {
+        width: 100%;
+        padding: 1rem;
+        font-size: 1.1rem;
+    }
+
+    .user-profile {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+        padding: 0.5rem 1rem;
+        background: rgba(67, 97, 238, 0.1);
+        border-radius: 50px;
+        margin-left: auto;
+    }
+
+    .otp-timer {
+        text-align: center;
+        font-weight: bold;
+        color: var(--primary);
+        margin-top: 1rem;
+        padding: 0.5rem;
+        background: #f8f9ff;
+        border-radius: 10px;
+    }
+</style>
